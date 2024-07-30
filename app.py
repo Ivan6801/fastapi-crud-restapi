@@ -2,7 +2,10 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional, Text
 from datetime import datetime
-from uuid import uuid4 as uuid
+from bson import ObjectId
+from database import post_collection, create_post, get_post, serialize_document
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 import uvicorn
 
 app = FastAPI()
@@ -20,6 +23,7 @@ class Post(BaseModel):
     created_at: datetime = datetime.now()
     published_at: Optional[datetime]
     published: Optional[bool] = False
+    imagen: Optional[str] = None
 
 
 @app.get('/')
@@ -28,40 +32,47 @@ def read_root():
 
 
 @app.get('/posts')
-def get_posts():
+async def get_posts():
+    posts = []
+    async for post in post_collection.find():
+        posts.append(serialize_document(post))
     return posts
 
 
 @app.post('/posts')
-def save_post(post: Post):
-    post.id = str(uuid())
-    posts.append(post.dict())
-    return posts[-1]
+async def save_post(post: Post):
+    post_data = jsonable_encoder(post)
+    new_post_id = await create_post(post_data)
+    created_post = await get_post(new_post_id)
+    return JSONResponse(status_code=201, content=created_post)
 
 
 @app.get('/posts/{post_id}')
-def get_post(post_id: str):
-    for post in posts:
-        if post["id"] == post_id:
-            return post
-    raise HTTPException(status_code=404, detail="Item not found")
+async def get_post(post_id: str):
+    post = await post_collection.find_one({"_id": ObjectId(post_id)})
+    if post is None:
+        raise HTTPException(status_code=404, detail="Post not found")
+    return post
 
 
 @app.delete('/posts/{post_id}')
-def delete_post(post_id: str):
-    for index, post in enumerate(posts):
-        if post["id"] == post_id:
-            posts.pop(index)
-            return {"message": "Post has been deleted succesfully"}
-    raise HTTPException(status_code=404, detail="Item not found")
+async def delete_post(post_id: str):
+    delete_result = await post_collection.delete_one({"_id": ObjectId(post_id)})
+    if delete_result.deleted_count == 1:
+        return {"message": "Post has been deleted successfully"}
+    raise HTTPException(status_code=404, detail="Post not found")
 
 
 @app.put('/posts/{post_id}')
-def update_post(post_id: str, updatedPost: Post):
-    for index, post in enumerate(posts):
-        if post["id"] == post_id:
-            posts[index]["title"] = updatedPost.dict()["title"]
-            posts[index]["content"] = updatedPost.dict()["content"]
-            posts[index]["author"] = updatedPost.dict()["author"]
-            return {"message": "Post has been updated succesfully"}
-    raise HTTPException(status_code=404, detail="Item not found")
+async def update_post(post_id: str, updated_post: Post):
+    update_result = await post_collection.update_one(
+        {"_id": ObjectId(post_id)}, {"$set": updated_post.dict()}
+    )
+    if update_result.modified_count == 1:
+        updated_post = await post_collection.find_one({"_id": ObjectId(post_id)})
+        return updated_post
+    raise HTTPException(status_code=404, detail="Post not found")
+
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=5000)
