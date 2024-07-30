@@ -1,78 +1,76 @@
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from typing import Optional, Text
-from datetime import datetime
+from fastapi.responses import HTMLResponse, JSONResponse
 from bson import ObjectId
-from database import post_collection, create_post, get_post, serialize_document
-from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse
-import uvicorn
+from database import db
+from models import Movie
 
 app = FastAPI()
+app.title = "Mi aplicación con FastAPI"
+app.version = "0.0.1"
 
-posts = []
-
-# Post model
-
-
-class Post(BaseModel):
-    id: Optional[str]
-    title: str
-    author: str
-    content: Text
-    created_at: datetime = datetime.now()
-    published_at: Optional[datetime]
-    published: Optional[bool] = False
-    imagen: Optional[str] = None
+# Helper function to serialize ObjectId
 
 
-@app.get('/')
-def read_root():
-    return {"welcome": "Welcome to my API"}
+def serialize_movie(movie):
+    movie["_id"] = str(movie["_id"])  # Convert ObjectId to string
+    return movie
 
 
-@app.get('/posts')
-async def get_posts():
-    posts = []
-    async for post in post_collection.find():
-        posts.append(serialize_document(post))
-    return posts
+@app.get('/', tags=['home'])
+def message():
+    return HTMLResponse('<h1>Hello world</h1>')
 
 
-@app.post('/posts')
-async def save_post(post: Post):
-    post_data = jsonable_encoder(post)
-    new_post_id = await create_post(post_data)
-    created_post = await get_post(new_post_id)
-    return JSONResponse(status_code=201, content=created_post)
+@app.get("/movies/")
+async def get_movies():
+    try:
+        movies = await db.movies.find().to_list(length=100)
+        return [serialize_movie(movie) for movie in movies]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get('/posts/{post_id}')
-async def get_post(post_id: str):
-    post = await post_collection.find_one({"_id": ObjectId(post_id)})
-    if post is None:
-        raise HTTPException(status_code=404, detail="Post not found")
-    return post
+@app.post("/movies/")
+async def create_movie(movie: Movie):
+    try:
+        new_movie = await db.movies.insert_one(movie.dict())
+        return {"id": str(new_movie.inserted_id)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.delete('/posts/{post_id}')
-async def delete_post(post_id: str):
-    delete_result = await post_collection.delete_one({"_id": ObjectId(post_id)})
-    if delete_result.deleted_count == 1:
-        return {"message": "Post has been deleted successfully"}
-    raise HTTPException(status_code=404, detail="Post not found")
+@app.get('/movies/{id}', tags=['movies'])
+async def get_movie(id: str):
+    try:
+        movie = await db.movies.find_one({"_id": ObjectId(id)})
+        if movie:
+            return serialize_movie(movie)
+        raise HTTPException(status_code=404, detail="Movie not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.put('/posts/{post_id}')
-async def update_post(post_id: str, updated_post: Post):
-    update_result = await post_collection.update_one(
-        {"_id": ObjectId(post_id)}, {"$set": updated_post.dict()}
-    )
-    if update_result.modified_count == 1:
-        updated_post = await post_collection.find_one({"_id": ObjectId(post_id)})
-        return updated_post
-    raise HTTPException(status_code=404, detail="Post not found")
+@app.put('/movies/{id}', tags=['movies'])
+async def update_movie(id: str, movie: Movie):
+    try:
+        result = await db.movies.update_one({"_id": ObjectId(id)}, {"$set": movie.dict()})
+        if result.modified_count:
+            return {**movie.dict(), "id": id}
+        raise HTTPException(status_code=404, detail="Movie not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.delete('/movies/{id}', tags=['movies'])
+async def delete_movie(id: str):
+    try:
+        result = await db.movies.delete_one({"_id": ObjectId(id)})
+        if result.deleted_count:
+            return {"message": "Movie deleted"}
+        raise HTTPException(status_code=404, detail="Movie not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=5000)
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=5000)
